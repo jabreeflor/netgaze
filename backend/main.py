@@ -21,6 +21,11 @@ app.add_middleware(
 engine = CaptureEngine()
 
 
+@app.on_event("startup")
+async def on_startup():
+    engine.set_loop(asyncio.get_event_loop())
+
+
 @app.get("/api/health")
 def health():
     return {"status": "ok", "timestamp": time.time()}

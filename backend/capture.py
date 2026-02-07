@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import struct
 import threading
 import time
+from collections import OrderedDict
 from typing import Dict, List, Optional
 
 import psutil
-from scapy.all import IP, TCP, UDP, ICMP, ARP, DNS, sniff
+from scapy.all import IP, IPv6, TCP, UDP, ICMP, ARP, DNS, DNSRR, Raw, sniff
 
 from models import PacketSummary, TrafficStats
 
@@ -16,6 +18,113 @@ PROTOCOL_MAP = {
     1: "ICMP",
     2: "IGMP",
 }
+
+DNS_CACHE_MAX = 5000
+
+
+def _extract_sni(packet) -> Optional[str]:
+    """Extract Server Name Indication from TLS ClientHello."""
+    if not packet.haslayer(Raw):
+        return None
+    payload = bytes(packet[Raw].load)
+    if len(payload) < 6:
+        return None
+    # TLS record: content_type=22 (handshake), version, length
+    if payload[0] != 22:
+        return None
+    # Handshake type: 1 = ClientHello
+    if len(payload) < 6 or payload[5] != 1:
+        return None
+    try:
+        # Skip TLS record header (5 bytes) + handshake header (4 bytes)
+        # + client version (2) + random (32) = offset 43
+        offset = 43
+        if offset >= len(payload):
+            return None
+        # Session ID length
+        sid_len = payload[offset]
+        offset += 1 + sid_len
+        if offset + 2 > len(payload):
+            return None
+        # Cipher suites length
+        cs_len = struct.unpack("!H", payload[offset:offset + 2])[0]
+        offset += 2 + cs_len
+        if offset >= len(payload):
+            return None
+        # Compression methods length
+        cm_len = payload[offset]
+        offset += 1 + cm_len
+        if offset + 2 > len(payload):
+            return None
+        # Extensions length
+        ext_len = struct.unpack("!H", payload[offset:offset + 2])[0]
+        offset += 2
+        ext_end = offset + ext_len
+        while offset + 4 <= ext_end and offset + 4 <= len(payload):
+            ext_type = struct.unpack("!H", payload[offset:offset + 2])[0]
+            ext_data_len = struct.unpack("!H", payload[offset + 2:offset + 4])[0]
+            offset += 4
+            if ext_type == 0:  # SNI extension
+                if offset + 5 <= len(payload):
+                    # Skip SNI list length (2) + type (1) + name length (2)
+                    name_len = struct.unpack("!H", payload[offset + 3:offset + 5])[0]
+                    name_start = offset + 5
+                    if name_start + name_len <= len(payload):
+                        return payload[name_start:name_start + name_len].decode("ascii", errors="ignore")
+                return None
+            offset += ext_data_len
+    except Exception:
+        pass
+    return None
+
+
+def _extract_dns_domain(packet) -> Optional[str]:
+    """Extract domain from DNS query."""
+    if not packet.haslayer(DNS):
+        return None
+    dns = packet[DNS]
+    if dns.qr == 0 and dns.qd:  # Query
+        try:
+            name = dns.qd.qname.decode("utf-8", errors="ignore").rstrip(".")
+            return name
+        except Exception:
+            pass
+    return None
+
+
+def _extract_dns_responses(packet) -> Dict[str, str]:
+    """Extract IP->domain mappings from DNS responses."""
+    mappings = {}
+    if not packet.haslayer(DNS):
+        return mappings
+    dns = packet[DNS]
+    if dns.qr != 1 or not dns.qd:
+        return mappings
+    try:
+        domain = dns.qd.qname.decode("utf-8", errors="ignore").rstrip(".")
+        # Walk answer records
+        for i in range(dns.ancount):
+            rr = dns.an[i] if dns.ancount > 1 else dns.an
+            if hasattr(rr, "rdata") and isinstance(rr, DNSRR):
+                rdata = rr.rdata
+                if isinstance(rdata, bytes):
+                    rdata = rdata.decode("utf-8", errors="ignore")
+                if isinstance(rdata, str) and rdata.count(".") >= 1:
+                    mappings[rdata] = domain
+            if dns.ancount == 1:
+                break
+    except Exception:
+        pass
+    return mappings
+
+
+def _get_ips(packet):
+    """Extract src/dst IPs supporting both IPv4 and IPv6."""
+    if packet.haslayer(IP):
+        return packet[IP].src, packet[IP].dst
+    if packet.haslayer(IPv6):
+        return packet[IPv6].src, packet[IPv6].dst
+    return "N/A", "N/A"
 
 
 def _identify_protocol(packet) -> str:
@@ -43,15 +152,24 @@ def _identify_protocol(packet) -> str:
     return "Other"
 
 
-def _build_summary(packet, protocol: str) -> str:
+def _build_summary(packet, protocol: str, domain: Optional[str]) -> str:
     parts = [protocol]
+    if domain:
+        parts.append(domain)
     if packet.haslayer(TCP):
         flags = packet[TCP].flags
         flag_str = str(flags)
         parts.append(flag_str)
     if packet.haslayer(DNS) and packet[DNS].qr == 0:
         try:
-            parts.append(f"query={packet[DNS].qd.qname.decode()}")
+            qname = packet[DNS].qd.qname.decode().rstrip(".")
+            parts.append(f"query={qname}")
+        except Exception:
+            pass
+    elif packet.haslayer(DNS) and packet[DNS].qr == 1:
+        try:
+            qname = packet[DNS].qd.qname.decode().rstrip(".")
+            parts.append(f"response={qname}")
         except Exception:
             pass
     return " ".join(parts)
@@ -65,10 +183,14 @@ class CaptureEngine:
         self._thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._dns_cache: OrderedDict = OrderedDict()
 
         self._window_packets: int = 0
         self._window_bytes: int = 0
         self._window_start: float = 0.0
+
+    def set_loop(self, loop: asyncio.AbstractEventLoop):
+        self._loop = loop
 
     def get_interfaces(self) -> List[str]:
         return list(psutil.net_if_addrs().keys())
@@ -81,7 +203,7 @@ class CaptureEngine:
         if self._running:
             return
         self._running = True
-        self._loop = asyncio.get_event_loop()
+        self._dns_cache.clear()
 
         with self._lock:
             self._stats = TrafficStats(
@@ -106,6 +228,11 @@ class CaptureEngine:
         with self._lock:
             self._stats.capture_active = False
 
+    def _dns_cache_put(self, ip: str, domain: str):
+        self._dns_cache[ip] = domain
+        if len(self._dns_cache) > DNS_CACHE_MAX:
+            self._dns_cache.popitem(last=False)
+
     def _capture_loop(self, interface: str):
         try:
             sniff(
@@ -123,8 +250,7 @@ class CaptureEngine:
     def _process_packet(self, packet):
         now = time.time()
 
-        src_ip = packet[IP].src if packet.haslayer(IP) else "N/A"
-        dst_ip = packet[IP].dst if packet.haslayer(IP) else "N/A"
+        src_ip, dst_ip = _get_ips(packet)
         protocol = _identify_protocol(packet)
         size = len(packet)
 
@@ -137,7 +263,38 @@ class CaptureEngine:
             src_port = packet[UDP].sport
             dst_port = packet[UDP].dport
 
-        summary_text = _build_summary(packet, protocol)
+        # Domain resolution
+        domain: Optional[str] = None
+
+        # 1. DNS query - extract queried domain
+        dns_domain = _extract_dns_domain(packet)
+        if dns_domain:
+            domain = dns_domain
+
+        # 2. DNS response - cache IP->domain mappings
+        dns_mappings = _extract_dns_responses(packet)
+        for ip, dom in dns_mappings.items():
+            self._dns_cache_put(ip, dom)
+        if dns_mappings and not domain:
+            domain = next(iter(dns_mappings.values()))
+
+        # 3. TLS SNI - extract from ClientHello
+        if not domain and packet.haslayer(TCP):
+            sni = _extract_sni(packet)
+            if sni:
+                domain = sni
+                # Also cache it for this destination IP
+                if dst_ip != "N/A":
+                    self._dns_cache_put(dst_ip, sni)
+
+        # 4. Fallback: look up in DNS cache
+        if not domain:
+            if dst_ip in self._dns_cache:
+                domain = self._dns_cache[dst_ip]
+            elif src_ip in self._dns_cache:
+                domain = self._dns_cache[src_ip]
+
+        summary_text = _build_summary(packet, protocol, domain)
 
         pkt_summary = PacketSummary(
             timestamp=now,
@@ -148,6 +305,7 @@ class CaptureEngine:
             dst_port=dst_port,
             size=size,
             summary=summary_text,
+            domain=domain,
         )
 
         with self._lock:

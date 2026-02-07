@@ -12,10 +12,12 @@ const PROTOCOL_COLORS = {
 };
 
 function formatTime(ts) {
-  return new Date(ts * 1000).toLocaleTimeString([], {
-    hour12: false,
-    fractionalSecondDigits: 3,
-  });
+  const d = new Date(ts * 1000);
+  const h = String(d.getHours()).padStart(2, "0");
+  const m = String(d.getMinutes()).padStart(2, "0");
+  const s = String(d.getSeconds()).padStart(2, "0");
+  const ms = String(d.getMilliseconds()).padStart(3, "0");
+  return `${h}:${m}:${s}.${ms}`;
 }
 
 function formatPort(port) {
@@ -56,6 +58,7 @@ export default function PacketTable({ packets }) {
               <th>Source</th>
               <th>Destination</th>
               <th>Protocol</th>
+              <th>Domain</th>
               <th>Port</th>
               <th>Size</th>
               <th>Info</th>
@@ -78,8 +81,11 @@ export default function PacketTable({ packets }) {
                     {pkt.protocol}
                   </span>
                 </td>
+                <td className="domain-cell" title={pkt.domain || ""}>
+                  {pkt.domain || "-"}
+                </td>
                 <td className="mono">
-                  {formatPort(pkt.src_port)} → {formatPort(pkt.dst_port)}
+                  {formatPort(pkt.src_port)} &rarr; {formatPort(pkt.dst_port)}
                 </td>
                 <td className="mono">{pkt.size}</td>
                 <td className="info-cell">{pkt.summary}</td>

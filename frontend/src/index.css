@@ -258,6 +258,15 @@ body {
   color: #000;
 }
 
+.domain-cell {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--accent);
+  font-family: "SF Mono", "Fira Code", "Consolas", monospace;
+  font-size: 0.78rem;
+}
+
 .info-cell {
   max-width: 200px;
   overflow: hidden;

@@ -14,6 +14,7 @@ class PacketSummary(BaseModel):
     dst_port: Optional[int] = None
     size: int
     summary: str
+    domain: Optional[str] = None
 
 
 class TrafficStats(BaseModel):
