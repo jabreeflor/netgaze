@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import csv
+import io
 import time
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 
 from capture import CaptureEngine
 
@@ -51,6 +54,62 @@ def start_capture(interface: str = "en0"):
 def stop_capture():
     engine.stop()
     return {"status": "stopped"}
+
+
+@app.get("/api/top-talkers")
+def get_top_talkers():
+    stats = engine.get_stats()
+    return {
+        "top_talkers": stats.top_talkers,
+        "top_destinations": stats.top_destinations,
+        "top_domains": stats.top_domains,
+        "connection_count": stats.connection_count,
+    }
+
+
+@app.get("/api/export")
+def export_packets(format: str = "json"):
+    packets = engine.get_captured_packets()
+
+    if format == "csv":
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow([
+            "Timestamp", "Source IP", "Destination IP", "Protocol",
+            "Source Port", "Destination Port", "Size", "Domain",
+            "Summary", "Headers", "Payload",
+        ])
+        for pkt in packets:
+            headers_str = "; ".join(f"{h.key}: {h.value}" for h in pkt.headers)
+            writer.writerow([
+                pkt.timestamp,
+                pkt.src_ip,
+                pkt.dst_ip,
+                pkt.protocol,
+                pkt.src_port or "",
+                pkt.dst_port or "",
+                pkt.size,
+                pkt.domain or "",
+                pkt.summary,
+                headers_str,
+                pkt.payload_text[:500] if pkt.payload_text else "",
+            ])
+        buf.seek(0)
+        return StreamingResponse(
+            buf,
+            media_type="text/csv",
+            headers={"Content-Disposition": "attachment; filename=netgaze_capture.csv"},
+        )
+
+    # Default: JSON
+    data = [pkt.model_dump() for pkt in packets]
+    return StreamingResponse(
+        io.BytesIO(
+            __import__("json").dumps(data, indent=2).encode()
+        ),
+        media_type="application/json",
+        headers={"Content-Disposition": "attachment; filename=netgaze_capture.json"},
+    )
 
 
 @app.websocket("/ws")

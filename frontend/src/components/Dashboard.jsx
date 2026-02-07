@@ -2,6 +2,9 @@ import { useState, useEffect, useCallback } from "react";
 import useWebSocket from "../hooks/useWebSocket";
 import BandwidthChart from "./BandwidthChart";
 import ProtocolChart from "./ProtocolChart";
+import TopTalkersChart from "./TopTalkersChart";
+import TopDomainsChart from "./TopDomainsChart";
+import TrafficFlowChart from "./TrafficFlowChart";
 import PacketTable from "./PacketTable";
 import StatusBar from "./StatusBar";
 
@@ -15,6 +18,7 @@ export default function Dashboard() {
   const [capturing, setCapturing] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [exporting, setExporting] = useState(false);
 
   useEffect(() => {
     fetch(`${API_BASE}/api/interfaces`)
@@ -64,14 +68,70 @@ export default function Dashboard() {
     }
   }, []);
 
+  const exportCapture = useCallback(async (format) => {
+    setExporting(true);
+    try {
+      const res = await fetch(
+        `${API_BASE}/api/export?format=${encodeURIComponent(format)}`
+      );
+      if (!res.ok) throw new Error("Export failed");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `netgaze_capture.${format}`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setExporting(false);
+    }
+  }, []);
+
+  const hasData = packets.length > 0 || (stats && stats.total_packets > 0);
+
   return (
     <div className="app">
       <header className="app-header">
-        <div>
-          <h1 className="app-title">NetGaze</h1>
-          <p className="app-subtitle">Network Traffic Viewer</p>
+        <div className="app-title-group">
+          <div className="app-logo">
+            <div className="app-logo-ring" />
+          </div>
+          <div>
+            <h1 className="app-title">
+              <span className="accent-char">N</span>et
+              <span className="accent-char">G</span>aze
+            </h1>
+            <p className="app-subtitle">Network Traffic Viewer</p>
+          </div>
         </div>
         <div className="controls">
+          {hasData && (
+            <>
+              <div className="export-group">
+                <button
+                  className="btn btn-export"
+                  onClick={() => exportCapture("json")}
+                  disabled={exporting}
+                  title="Export as JSON"
+                >
+                  {exporting ? "..." : "JSON"}
+                </button>
+                <button
+                  className="btn btn-export"
+                  onClick={() => exportCapture("csv")}
+                  disabled={exporting}
+                  title="Export as CSV"
+                >
+                  {exporting ? "..." : "CSV"}
+                </button>
+              </div>
+              <div className="controls-divider" />
+            </>
+          )}
           <select
             className="interface-select"
             value={selectedInterface}
@@ -106,7 +166,7 @@ export default function Dashboard() {
 
       {error && (
         <div className="error-banner">
-          {error}
+          <span>{error}</span>
           <button className="error-dismiss" onClick={() => setError(null)}>
             Dismiss
           </button>
@@ -117,17 +177,32 @@ export default function Dashboard() {
 
       {!capturing && packets.length === 0 ? (
         <div className="empty-state">
-          <p className="empty-title">No traffic captured</p>
+          <div className="empty-radar">
+            <div className="empty-radar-crosshair-h" />
+            <div className="empty-radar-crosshair-v" />
+            <div className="empty-radar-sweep" />
+            <div className="empty-radar-center" />
+          </div>
+          <p className="empty-title">Awaiting Signal</p>
           <p className="empty-desc">
-            Select a network interface and click Start Capture to begin
-            monitoring.
+            Select a network interface and start capture to begin monitoring
+            traffic in real time.
           </p>
+          <div className="empty-hint">
+            <span className="empty-hint-key">Step 1</span>
+            Choose interface
+            <span className="empty-hint-key">Step 2</span>
+            Start capture
+          </div>
         </div>
       ) : (
         <>
-          <div className="charts-row">
+          <div className="charts-grid">
             <BandwidthChart stats={stats} />
             <ProtocolChart stats={stats} />
+            <TopTalkersChart stats={stats} />
+            <TopDomainsChart stats={stats} />
+            <TrafficFlowChart packets={packets} stats={stats} />
           </div>
           <PacketTable packets={packets} />
         </>

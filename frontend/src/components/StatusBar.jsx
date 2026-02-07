@@ -18,38 +18,90 @@ function formatDuration(startTime) {
 }
 
 export default function StatusBar({ connected, stats }) {
+  const isCapturing = stats?.capture_active;
+
   return (
     <div className="status-bar">
-      <div className="status-item">
+      <div className="status-segment status-segment-primary">
         <span
           className={`status-dot ${connected ? "connected" : "disconnected"}`}
         />
-        {connected ? "Connected" : "Disconnected"}
+        <span
+          className="status-connection-label"
+          style={{ color: connected ? "var(--green)" : "var(--red)" }}
+        >
+          {connected ? "Online" : "Offline"}
+        </span>
       </div>
+
+      {isCapturing && (
+        <div className="status-segment">
+          <span className="status-dot capturing" />
+          <div className="status-metric">
+            <span className="status-label">Capture</span>
+            <span className="status-value accent">Active</span>
+          </div>
+        </div>
+      )}
+
       {stats && (
         <>
-          <div className="status-item">
-            <span className="status-label">Interface</span>
-            {stats.interface || "-"}
+          <div className="status-segment">
+            <div className="status-metric">
+              <span className="status-label">Interface</span>
+              <span className="status-value">{stats.interface || "-"}</span>
+            </div>
           </div>
-          <div className="status-item">
-            <span className="status-label">Packets</span>
-            {stats.total_packets.toLocaleString()}
+
+          <div className="status-segment">
+            <div className="status-metric">
+              <span className="status-label">Packets</span>
+              <span className="status-value">
+                {stats.total_packets.toLocaleString()}
+              </span>
+            </div>
           </div>
-          <div className="status-item">
-            <span className="status-label">Data</span>
-            {formatBytes(stats.total_bytes)}
+
+          <div className="status-segment">
+            <div className="status-metric">
+              <span className="status-label">Data</span>
+              <span className="status-value">
+                {formatBytes(stats.total_bytes)}
+              </span>
+            </div>
           </div>
-          <div className="status-item">
-            <span className="status-label">Rate</span>
-            {stats.packets_per_sec.toFixed(0)} pkt/s
+
+          <div className="status-segment">
+            <div className="status-metric">
+              <span className="status-label">Rate</span>
+              <span className="status-value accent">
+                {stats.packets_per_sec.toFixed(0)} pkt/s
+              </span>
+            </div>
           </div>
-          <div className="status-item">
-            <span className="status-label">Capture</span>
-            {stats.capture_active ? "Active" : "Stopped"}
-            {stats.start_time && ` (${formatDuration(stats.start_time)})`}
-          </div>
+
+          {stats.start_time && (
+            <div className="status-segment">
+              <div className="status-metric">
+                <span className="status-label">Duration</span>
+                <span className="status-value">
+                  {formatDuration(stats.start_time)}
+                </span>
+              </div>
+            </div>
+          )}
         </>
+      )}
+
+      {!stats && !isCapturing && (
+        <div className="status-segment">
+          <div className="status-metric">
+            <span className="status-label">Status</span>
+            <span className="status-value" style={{ color: "var(--text-muted)" }}>
+              Idle
+            </span>
+          </div>
+        </div>
       )}
     </div>
   );

@@ -1,8 +1,13 @@
 from __future__ import annotations
 
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel
+
+
+class PacketHeader(BaseModel):
+    key: str
+    value: str
 
 
 class PacketSummary(BaseModel):
@@ -15,6 +20,12 @@ class PacketSummary(BaseModel):
     size: int
     summary: str
     domain: Optional[str] = None
+    headers: List[PacketHeader] = []
+    payload_hex: str = ""
+    payload_text: str = ""
+    direction: Optional[str] = None
+    tcp_flags: Optional[str] = None
+    ttl: Optional[int] = None
 
 
 class TrafficStats(BaseModel):
@@ -26,3 +37,8 @@ class TrafficStats(BaseModel):
     capture_active: bool = False
     interface: str = ""
     start_time: Optional[float] = None
+    top_talkers: Dict[str, int] = {}
+    top_destinations: Dict[str, int] = {}
+    top_domains: Dict[str, int] = {}
+    bandwidth_history: List[dict] = []
+    connection_count: int = 0
