@@ -1,11 +1,11 @@
+from __future__ import annotations
+
 import asyncio
-import json
 import time
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
-from models import PacketSummary, TrafficStats
 from capture import CaptureEngine
 
 app = FastAPI(title="NetGaze", version="1.0.0")
@@ -51,17 +51,36 @@ def stop_capture():
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
     await ws.accept()
+    last_stats_time = 0.0
     try:
         while True:
-            packet = await engine.get_packet()
-            if packet:
-                await ws.send_json(packet.model_dump())
+            batch = []
+            for _ in range(50):
+                packet = await engine.get_packet()
+                if packet is None:
+                    break
+                batch.append(packet.model_dump())
+
+            now = time.time()
+            send_stats = now - last_stats_time >= 1.0
+
+            if batch or send_stats:
+                message = {}
+                if batch:
+                    message["packets"] = batch
+                if send_stats:
+                    message["stats"] = engine.get_stats().model_dump()
+                    last_stats_time = now
+                await ws.send_json(message)
             else:
                 await asyncio.sleep(0.05)
     except WebSocketDisconnect:
         pass
     except Exception:
-        await ws.close()
+        try:
+            await ws.close()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
